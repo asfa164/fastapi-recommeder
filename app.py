@@ -36,6 +36,7 @@ BEDROCK_REGION = os.getenv("BEDROCK_REGION") or COGNITO_REGION or "eu-west-1"
 # Security – simple API Key auth
 # ==============================
 
+
 async def verify_api_key(x_api_key: str = Header(..., alias="X-API-Key")):
     if x_api_key != API_KEY:
         raise HTTPException(
@@ -48,6 +49,7 @@ async def verify_api_key(x_api_key: str = Header(..., alias="X-API-Key")):
 # ==============================
 # Pydantic models (same schema as UI)
 # ==============================
+
 
 class TurnMatching(BaseModel):
     scope: Optional[str] = Field(
@@ -103,10 +105,48 @@ class CompositeObjective(BaseModel):
         ..., min_items=1, description="At least one sub objective required"
     )
 
+    class Config:
+        schema_extra = {
+            "example": {
+                "name": "Telecom Support – Vague Extra Charge Question",
+                "description": "customer has noticed an extra charge and asks about it.",
+                "domain": "telecom_billing",
+                "persona": "Postpaid telecom customer in Ireland",
+                "userVariables": {
+                    "account_type": "postpaid",
+                    "billing_cycle": "monthly",
+                    "currency": "EUR",
+                },
+                "subObjectives": [
+                    {
+                        "description": "What is this extra charge?",
+                        "isBlocking": True,
+                        "instructions": (
+                            "Treat this as a vague billing query. The customer only says "
+                            "\"What is this extra charge?\" with no further context. Focus on how "
+                            "the agent elicits the right information before promising a resolution."
+                        ),
+                        "satisfactionCriteria": [
+                            "Agent acknowledges the concern about the extra charge.",
+                            "Agent asks for at least one specific piece of information to identify the charge "
+                            "(e.g. date, amount, invoice ID, last 4 digits of card).",
+                            "Agent avoids confirming the cause of the charge before seeing the relevant bill details.",
+                        ],
+                        "maxTurnsForObjective": 8,
+                        "turnMatching": {
+                            "scope": "any",
+                            "evaluationStrategy": "first_match",
+                        },
+                    }
+                ],
+            }
+        }
+
 
 # ==============================
 # Response models (what Bedrock should return)
 # ==============================
+
 
 class Recommendation(BaseModel):
     reason: str
@@ -128,6 +168,7 @@ class RecommendResponse(BaseModel):
 # Cognito helpers (User Pool + Identity Pool)
 # ==============================
 
+
 def _compute_secret_hash(username: str) -> Optional[str]:
     """
     Compute Cognito SECRET_HASH if client secret is configured.
@@ -147,8 +188,18 @@ def authenticate_user_and_get_id_token() -> str:
     Authenticate against Cognito User Pool and return the ID token.
     Uses USER_PASSWORD_AUTH and optional SECRET_HASH.
     """
-    if not all([COGNITO_REGION, COGNITO_CLIENT_ID, COGNITO_USERNAME, COGNITO_PASSWORD, COGNITO_USER_POOL_ID]):
-        raise RuntimeError("Cognito User Pool environment variables are not fully configured")
+    if not all(
+        [
+            COGNITO_REGION,
+            COGNITO_CLIENT_ID,
+            COGNITO_USERNAME,
+            COGNITO_PASSWORD,
+            COGNITO_USER_POOL_ID,
+        ]
+    ):
+        raise RuntimeError(
+            "Cognito User Pool environment variables are not fully configured"
+        )
 
     cognito_idp = boto3.client("cognito-idp", region_name=COGNITO_REGION)
 
@@ -176,7 +227,9 @@ def get_temporary_aws_credentials(id_token: str) -> Dict[str, str]:
     Use Cognito Identity Pool to exchange the ID token for temporary AWS credentials.
     """
     if not all([COGNITO_REGION, COGNITO_IDENTITY_POOL_ID, COGNITO_USER_POOL_ID]):
-        raise RuntimeError("Cognito Identity Pool environment variables are not fully configured")
+        raise RuntimeError(
+            "Cognito Identity Pool environment variables are not fully configured"
+        )
 
     provider = f"cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}"
 
@@ -321,7 +374,10 @@ def call_bedrock(composite: CompositeObjective) -> RecommendResponse:
 
 app = FastAPI(
     title="Objective Recommender API",
-    description="FastAPI wrapper around Bedrock (via Cognito) to recommend clearer defining objectives.",
+    description=(
+        "FastAPI wrapper around Bedrock (via Cognito) to recommend "
+        "clearer defining objectives."
+    ),
     version="1.0.0",
 )
 
@@ -362,4 +418,5 @@ async def recommend_objectives(payload: CompositeObjective):
 # Optional: local dev entrypoint
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
