@@ -153,28 +153,22 @@ class SimpleObjectiveRequest(BaseModel):
         ...,
         description="The defining objective or prompt you want to rewrite/refine.",
     )
-    persona: Optional[str] = Field(
-        default=None,
-        description="Optional: persona or customer type, used only for nuance.",
-    )
-    domain: Optional[str] = Field(
-        default=None,
-        description="Optional: domain label, e.g. telecom_billing, banking, travel.",
-    )
     context: Optional[str] = Field(
         default=None,
-        description="Optional: any extra context for the scenario.",
+        description=(
+            "Optional free-text context (e.g. persona, domain, scenario details). "
+            "If you want to pass persona/domain, just describe them here."
+        ),
     )
 
     class Config:
         schema_extra = {
             "example": {
                 "objective": "What is this extra charge?",
-                "persona": "Postpaid telecom customer in Ireland",
-                "domain": "telecom_billing",
                 "context": (
-                    "Customer has seen an extra charge on their latest bill and only asks "
-                    "\"What is this extra charge?\" without any further details."
+                    "Customer is a postpaid telecom customer in Ireland who has seen an extra charge "
+                    "on their latest bill and only asks 'What is this extra charge?' without any "
+                    "other details. Domain: telecom billing."
                 ),
             }
         }
@@ -372,13 +366,11 @@ The user will send you a JSON object with this structure:
 
 {
   "objective": "string (required)",
-  "persona": "string (optional)",
-  "domain": "string (optional)",
-  "context": "string (optional)"
+  "context": "string (optional; may include persona, domain, and scenario details)"
 }
 
 - "objective" is the only required field. It may be vague, underspecified or poorly worded.
-- "persona", "domain" and "context" are optional helpers. Use them only if they make your rewrite more precise, but do not depend on them.
+- "context" is an optional helper. It may include persona, domain, and any other scenario details, but you must still be able to work if it is missing.
 
 Your task:
 
@@ -389,8 +381,8 @@ Your task:
 
 Important:
 - Focus on rewriting the objective itself.
-- Do NOT invent extra constraints that are not implied by the original objective + optional context.
-- If persona/domain/context are missing, still produce good suggestions based only on the objective text.
+- Do NOT invent extra constraints that are not implied by the original objective plus the optional context.
+- If context is missing, still produce good suggestions based only on the objective text.
 
 Return ONLY valid JSON with this structure (no explanation text outside JSON):
 
@@ -463,7 +455,7 @@ def call_bedrock_simple(payload: SimpleObjectiveRequest) -> SimpleRecommendRespo
                 "content": [
                     {
                         "type": "text",
-                        # send structured JSON so the model sees optional context but knows objective is key
+                        # send structured JSON so the model sees optional context
                         "text": json.dumps(payload.model_dump(), indent=2),
                     }
                 ],
@@ -541,14 +533,13 @@ async def recommend_objectives(payload: CompositeObjective):
 )
 async def recommend_objective_simple(payload: SimpleObjectiveRequest):
     """
-    Accepts a single vague defining objective (plus optional persona/domain/context)
-    and returns:
+    Accepts a single vague defining objective plus optional context and returns:
 
     - reason
     - suggestedDefiningObjective
     - alternativeDefiningObjective
 
-    This is the lightweight version where only the objective text really matters.
+    This is the lightweight version where only the objective text is required.
     """
     try:
         result = call_bedrock_simple(payload)
