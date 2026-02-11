@@ -47,7 +47,7 @@ async def verify_api_key(x_api_key: str = Header(..., alias="X-API-Key")):
 
 
 # ==============================
-# Pydantic models (same schema as UI)
+# Pydantic models (Composite schema – existing)
 # ==============================
 
 
@@ -144,7 +144,44 @@ class CompositeObjective(BaseModel):
 
 
 # ==============================
-# Response models (what Bedrock should return)
+# Simple schema – single objective only
+# ==============================
+
+
+class SimpleObjectiveRequest(BaseModel):
+    objective: str = Field(
+        ...,
+        description="The defining objective or prompt you want to rewrite/refine.",
+    )
+    persona: Optional[str] = Field(
+        default=None,
+        description="Optional: persona or customer type, used only for nuance.",
+    )
+    domain: Optional[str] = Field(
+        default=None,
+        description="Optional: domain label, e.g. telecom_billing, banking, travel.",
+    )
+    context: Optional[str] = Field(
+        default=None,
+        description="Optional: any extra context for the scenario.",
+    )
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "objective": "What is this extra charge?",
+                "persona": "Postpaid telecom customer in Ireland",
+                "domain": "telecom_billing",
+                "context": (
+                    "Customer has seen an extra charge on their latest bill and only asks "
+                    "\"What is this extra charge?\" without any further details."
+                ),
+            }
+        }
+
+
+# ==============================
+# Response models
 # ==============================
 
 
@@ -162,6 +199,12 @@ class SubObjectiveRecommendation(BaseModel):
 
 class RecommendResponse(BaseModel):
     subObjectives: List[SubObjectiveRecommendation]
+
+
+class SimpleRecommendResponse(BaseModel):
+    reason: str
+    suggestedDefiningObjective: str
+    alternativeDefiningObjective: str
 
 
 # ==============================
@@ -267,10 +310,10 @@ def get_bedrock_client():
 
 
 # ==============================
-# Bedrock prompt / call
+# Bedrock prompts / calls
 # ==============================
 
-SYSTEM_PROMPT = """
+SYSTEM_PROMPT_COMPOSITE = """
 You are a test objective recommendation assistant.
 
 The user will send a JSON object called CompositeObjective, with this structure:
@@ -322,14 +365,64 @@ Return ONLY valid JSON with this structure (no explanation text outside JSON):
 """.strip()
 
 
-def call_bedrock(composite: CompositeObjective) -> RecommendResponse:
-    """
-    Call Bedrock (Claude-style) and parse the JSON the model returns.
-    """
+SYSTEM_PROMPT_SIMPLE = """
+You are a test objective rewriting assistant.
 
+The user will send you a JSON object with this structure:
+
+{
+  "objective": "string (required)",
+  "persona": "string (optional)",
+  "domain": "string (optional)",
+  "context": "string (optional)"
+}
+
+- "objective" is the only required field. It may be vague, underspecified or poorly worded.
+- "persona", "domain" and "context" are optional helpers. Use them only if they make your rewrite more precise, but do not depend on them.
+
+Your task:
+
+1. Analyse the current "objective" as a defining objective for a test scenario.
+2. Suggest a clearer, more specific, and more testable defining objective.
+3. Provide an alternative defining objective that takes a slightly different angle.
+4. Briefly explain why your primary suggestion is better than the original.
+
+Important:
+- Focus on rewriting the objective itself.
+- Do NOT invent extra constraints that are not implied by the original objective + optional context.
+- If persona/domain/context are missing, still produce good suggestions based only on the objective text.
+
+Return ONLY valid JSON with this structure (no explanation text outside JSON):
+
+{
+  "reason": "string",
+  "suggestedDefiningObjective": "string",
+  "alternativeDefiningObjective": "string"
+}
+""".strip()
+
+
+def _invoke_bedrock(body: dict) -> dict:
+    client = get_bedrock_client()
+
+    response = client.invoke_model(
+        modelId=BEDROCK_MODEL_ID,
+        body=json.dumps(body),
+        contentType="application/json",
+        accept="application/json",
+    )
+
+    raw_body = response.get("body").read()
+    return json.loads(raw_body)
+
+
+def call_bedrock_composite(composite: CompositeObjective) -> RecommendResponse:
+    """
+    Call Bedrock for the composite objective case and parse the JSON the model returns.
+    """
     body = {
         "anthropic_version": "bedrock-2023-05-31",
-        "system": SYSTEM_PROMPT,
+        "system": SYSTEM_PROMPT_COMPOSITE,
         "messages": [
             {
                 "role": "user",
@@ -345,27 +438,51 @@ def call_bedrock(composite: CompositeObjective) -> RecommendResponse:
         "temperature": 0.0,
     }
 
-    client = get_bedrock_client()
-
-    response = client.invoke_model(
-        modelId=BEDROCK_MODEL_ID,
-        body=json.dumps(body),
-        contentType="application/json",
-        accept="application/json",
-    )
-
-    raw_body = response.get("body").read()
-    resp_json = json.loads(raw_body)
+    resp_json = _invoke_bedrock(body)
 
     text_chunks = resp_json.get("content", [])
     if not text_chunks or "text" not in text_chunks[0]:
         raise ValueError("Model returned no text content")
 
     raw_text = text_chunks[0]["text"].strip()
-
     parsed = json.loads(raw_text)
 
     return RecommendResponse(**parsed)
+
+
+def call_bedrock_simple(payload: SimpleObjectiveRequest) -> SimpleRecommendResponse:
+    """
+    Call Bedrock for a single vague objective (simple mode) and parse JSON.
+    """
+    body = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "system": SYSTEM_PROMPT_SIMPLE,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        # send structured JSON so the model sees optional context but knows objective is key
+                        "text": json.dumps(payload.model_dump(), indent=2),
+                    }
+                ],
+            }
+        ],
+        "max_tokens": 512,
+        "temperature": 0.0,
+    }
+
+    resp_json = _invoke_bedrock(body)
+
+    text_chunks = resp_json.get("content", [])
+    if not text_chunks or "text" not in text_chunks[0]:
+        raise ValueError("Model returned no text content")
+
+    raw_text = text_chunks[0]["text"].strip()
+    parsed = json.loads(raw_text)
+
+    return SimpleRecommendResponse(**parsed)
 
 
 # ==============================
@@ -376,9 +493,10 @@ app = FastAPI(
     title="Objective Recommender API",
     description=(
         "FastAPI wrapper around Bedrock (via Cognito) to recommend "
-        "clearer defining objectives."
+        "clearer defining objectives. Includes a rich CompositeObjective "
+        "mode and a simple single-objective mode."
     ),
-    version="1.0.0",
+    version="1.1.0",
 )
 
 
@@ -390,18 +508,18 @@ async def root():
 @app.post(
     "/recommend",
     response_model=RecommendResponse,
-    summary="Recommend clearer defining objectives",
+    summary="Recommend clearer defining objectives (Composite mode)",
     dependencies=[Depends(verify_api_key)],
 )
 async def recommend_objectives(payload: CompositeObjective):
     """
-    Accepts a CompositeObjective and returns improved defining objectives
-    for each sub-objective.
+    Accepts a CompositeObjective (with persona, userVariables, subObjectives[])
+    and returns improved defining objectives for each sub-objective.
 
     Security: requires `X-API-Key` header with the configured API key.
     """
     try:
-        result = call_bedrock(payload)
+        result = call_bedrock_composite(payload)
         return result
     except json.JSONDecodeError as e:
         raise HTTPException(
@@ -411,7 +529,39 @@ async def recommend_objectives(payload: CompositeObjective):
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error calling Bedrock: {e}",
+            detail=f"Error calling Bedrock (composite): {e}",
+        )
+
+
+@app.post(
+    "/recommend-simple",
+    response_model=SimpleRecommendResponse,
+    summary="Recommend clearer defining objective (Simple mode)",
+    dependencies=[Depends(verify_api_key)],
+)
+async def recommend_objective_simple(payload: SimpleObjectiveRequest):
+    """
+    Accepts a single vague defining objective (plus optional persona/domain/context)
+    and returns:
+
+    - reason
+    - suggestedDefiningObjective
+    - alternativeDefiningObjective
+
+    This is the lightweight version where only the objective text really matters.
+    """
+    try:
+        result = call_bedrock_simple(payload)
+        return result
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to parse model JSON: {e}",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error calling Bedrock (simple): {e}",
         )
 
 
