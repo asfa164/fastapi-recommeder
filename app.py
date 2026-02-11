@@ -144,8 +144,31 @@ class CompositeObjective(BaseModel):
 
 
 # ==============================
-# Simple schema – single objective only
+# Simple schema – single objective with structured context
 # ==============================
+
+
+class SimpleContext(BaseModel):
+    persona: Optional[str] = Field(
+        default=None,
+        description="Persona or customer type, e.g. 'Postpaid telecom customer in Ireland'.",
+    )
+    domain: Optional[str] = Field(
+        default=None,
+        description="Domain label, e.g. 'telecom_billing', 'banking', 'travel'.",
+    )
+    instructions: Optional[str] = Field(
+        default=None,
+        description="High-level instructions for how the agent/test should behave.",
+    )
+    satisfactionCriteria: Optional[List[str]] = Field(
+        default=None,
+        description="Concrete pass/fail criteria for this defining objective.",
+    )
+    extraNotes: Optional[str] = Field(
+        default=None,
+        description="Any additional scenario details not covered above.",
+    )
 
 
 class SimpleObjectiveRequest(BaseModel):
@@ -153,11 +176,11 @@ class SimpleObjectiveRequest(BaseModel):
         ...,
         description="The defining objective or prompt you want to rewrite/refine.",
     )
-    context: Optional[str] = Field(
+    context: Optional[SimpleContext] = Field(
         default=None,
         description=(
-            "Optional free-text context (e.g. persona, domain, scenario details). "
-            "If you want to pass persona/domain, just describe them here."
+            "Optional structured context (persona, domain, instructions, "
+            "satisfaction criteria, extra notes)."
         ),
     )
 
@@ -165,11 +188,22 @@ class SimpleObjectiveRequest(BaseModel):
         schema_extra = {
             "example": {
                 "objective": "What is this extra charge?",
-                "context": (
-                    "Customer is a postpaid telecom customer in Ireland who has seen an extra charge "
-                    "on their latest bill and only asks 'What is this extra charge?' without any "
-                    "other details. Domain: telecom billing."
-                ),
+                "context": {
+                    "persona": "Postpaid telecom customer in Ireland",
+                    "domain": "telecom_billing",
+                    "instructions": (
+                        "Treat this as a vague billing query. The customer only says "
+                        "'What is this extra charge?' with no further context. Focus on how the "
+                        "agent elicits the right information before promising a resolution."
+                    ),
+                    "satisfactionCriteria": [
+                        "Agent acknowledges the concern about the extra charge.",
+                        "Agent asks for at least one specific piece of information to identify the charge "
+                        "(e.g. date, amount, invoice ID, last 4 digits of card).",
+                        "Agent avoids confirming the cause of the charge before seeing the relevant bill details."
+                    ],
+                    "extraNotes": "Customer is not angry yet, just confused. Keep tone calm and reassuring."
+                }
             }
         }
 
@@ -366,11 +400,18 @@ The user will send you a JSON object with this structure:
 
 {
   "objective": "string (required)",
-  "context": "string (optional; may include persona, domain, and scenario details)"
+  "context": {
+    "persona": "string (optional)",
+    "domain": "string (optional)",
+    "instructions": "string (optional)",
+    "satisfactionCriteria": ["string", "... (optional)"],
+    "extraNotes": "string (optional)"
+  }
 }
 
 - "objective" is the only required field. It may be vague, underspecified or poorly worded.
-- "context" is an optional helper. It may include persona, domain, and any other scenario details, but you must still be able to work if it is missing.
+- "context" is an optional structured helper. It may include persona, domain, instructions, satisfaction criteria,
+  and any other scenario details, but you must still be able to work if it is missing.
 
 Your task:
 
@@ -381,7 +422,7 @@ Your task:
 
 Important:
 - Focus on rewriting the objective itself.
-- Do NOT invent extra constraints that are not implied by the original objective plus the optional context.
+- Do NOT invent extra constraints that are not implied by the original objective plus the optional structured context.
 - If context is missing, still produce good suggestions based only on the objective text.
 
 Return ONLY valid JSON with this structure (no explanation text outside JSON):
@@ -455,7 +496,7 @@ def call_bedrock_simple(payload: SimpleObjectiveRequest) -> SimpleRecommendRespo
                 "content": [
                     {
                         "type": "text",
-                        # send structured JSON so the model sees optional context
+                        # send structured JSON so the model sees the structured context object
                         "text": json.dumps(payload.model_dump(), indent=2),
                     }
                 ],
@@ -486,9 +527,9 @@ app = FastAPI(
     description=(
         "FastAPI wrapper around Bedrock (via Cognito) to recommend "
         "clearer defining objectives. Includes a rich CompositeObjective "
-        "mode and a simple single-objective mode."
+        "mode and a simple single-objective mode with structured context."
     ),
-    version="1.1.0",
+    version="1.2.0",
 )
 
 
@@ -528,18 +569,20 @@ async def recommend_objectives(payload: CompositeObjective):
 @app.post(
     "/recommend-simple",
     response_model=SimpleRecommendResponse,
-    summary="Recommend clearer defining objective (Simple mode)",
+    summary="Recommend clearer defining objective (Simple mode, structured context)",
     dependencies=[Depends(verify_api_key)],
 )
 async def recommend_objective_simple(payload: SimpleObjectiveRequest):
     """
-    Accepts a single vague defining objective plus optional context and returns:
+    Accepts a single vague defining objective plus optional structured context and returns:
 
     - reason
     - suggestedDefiningObjective
     - alternativeDefiningObjective
 
     This is the lightweight version where only the objective text is required.
+    Context, if present, is a structured object containing persona, domain, instructions,
+    satisfaction criteria, and extra notes.
     """
     try:
         result = call_bedrock_simple(payload)
