@@ -47,121 +47,6 @@ async def verify_api_key(x_api_key: str = Header(..., alias="X-API-Key")):
 
 
 # ==============================
-# Pydantic models (Composite schema – existing)
-# ==============================
-
-
-class TurnMatching(BaseModel):
-    scope: Optional[str] = Field(
-        default="any",
-        description="(optional) Turn matching scope. One of: any | recent | current. Default: any.",
-    )
-    evaluationStrategy: Optional[str] = Field(
-        default="first_match",
-        description=(
-            "(optional) Evaluation strategy for matching turns. "
-            "One of: first_match | best_match | latest_match. Default: first_match."
-        ),
-    )
-    recentTurnCount: Optional[int] = Field(
-        default=None,
-        description="(optional) Only required when scope='recent'. Number of recent turns to consider.",
-    )
-
-
-class SubObjective(BaseModel):
-    description: str = Field(
-        ...,
-        description="(required) What this sub-objective is trying to achieve.",
-    )
-    isBlocking: Optional[bool] = Field(
-        default=False,
-        description="(optional) If true, failure of this objective stops the test. Default: false.",
-    )
-    instructions: Optional[str] = Field(
-        default=None,
-        description="(optional) Special instructions for how this sub-objective should be evaluated.",
-    )
-    satisfactionCriteria: Optional[List[str]] = Field(
-        default=None,
-        description="(optional) List of concrete pass conditions for this sub-objective.",
-    )
-    maxTurnsForObjective: Optional[int] = Field(
-        default=12,
-        description="(optional) Maximum turns allowed for this sub-objective. Default: 12.",
-    )
-    turnMatching: Optional[TurnMatching] = Field(
-        default=None,
-        description="(optional) Turn-based matching configuration for this sub-objective.",
-    )
-
-
-class CompositeObjective(BaseModel):
-    name: Optional[str] = Field(
-        default=None,
-        description="(optional) Human-friendly name for this composite objective.",
-    )
-    description: Optional[str] = Field(
-        default=None,
-        description="(optional) Free-text description of the scenario.",
-    )
-    domain: Optional[str] = Field(
-        default=None,
-        description="(optional) Domain label, e.g. 'telecom_billing', 'banking', 'travel'.",
-    )
-    persona: str = Field(
-        ...,
-        description="(required) Persona or customer type, e.g. 'Postpaid telecom customer in Ireland'.",
-    )
-    userVariables: Optional[Dict[str, str]] = Field(
-        default=None,
-        description="(optional) Context variables for the persona, as key/value strings.",
-    )
-    subObjectives: List[SubObjective] = Field(
-        ...,
-        min_items=1,
-        description="(required) Array of at least one sub-objective.",
-    )
-
-    class Config:
-        schema_extra = {
-            "example": {
-                "name": "Telecom Support – Vague Extra Charge Question",
-                "description": "customer has noticed an extra charge and asks about it.",
-                "domain": "telecom_billing",
-                "persona": "Postpaid telecom customer in Ireland",
-                "userVariables": {
-                    "account_type": "postpaid",
-                    "billing_cycle": "monthly",
-                    "currency": "EUR",
-                },
-                "subObjectives": [
-                    {
-                        "description": "What is this extra charge?",
-                        "isBlocking": True,
-                        "instructions": (
-                            "Treat this as a vague billing query. The customer only says "
-                            "\"What is this extra charge?\" with no further context. Focus on how "
-                            "the agent elicits the right information before promising a resolution."
-                        ),
-                        "satisfactionCriteria": [
-                            "Agent acknowledges the concern about the extra charge.",
-                            "Agent asks for at least one specific piece of information to identify the charge "
-                            "(e.g. date, amount, invoice ID, last 4 digits of card).",
-                            "Agent avoids confirming the cause of the charge before seeing the relevant bill details.",
-                        ],
-                        "maxTurnsForObjective": 8,
-                        "turnMatching": {
-                            "scope": "any",
-                            "evaluationStrategy": "first_match",
-                        },
-                    }
-                ],
-            }
-        }
-
-
-# ==============================
 # Simple schema – single objective with structured context
 # ==============================
 
@@ -227,24 +112,8 @@ class SimpleObjectiveRequest(BaseModel):
 
 
 # ==============================
-# Response models
+# Response model
 # ==============================
-
-
-class Recommendation(BaseModel):
-    reason: str
-    suggestedDefiningObjective: str
-    alternativeDefiningObjective: str
-
-
-class SubObjectiveRecommendation(BaseModel):
-    index: int
-    currentDefiningObjective: str
-    recommendation: Recommendation
-
-
-class RecommendResponse(BaseModel):
-    subObjectives: List[SubObjectiveRecommendation]
 
 
 class SimpleRecommendResponse(BaseModel):
@@ -356,60 +225,8 @@ def get_bedrock_client():
 
 
 # ==============================
-# Bedrock prompts / calls
+# Bedrock prompt / call (simple mode only)
 # ==============================
-
-SYSTEM_PROMPT_COMPOSITE = """
-You are a test objective recommendation assistant.
-
-The user will send a JSON object called CompositeObjective, with this structure:
-
-{
-  "name": "string (optional)",
-  "description": "string (optional)",
-  "domain": "string (optional)",
-  "persona": "string (required)",
-  "userVariables": { "key": "value" },
-  "subObjectives": [
-    {
-      "description": "string",
-      "isBlocking": boolean,
-      "instructions": "string",
-      "satisfactionCriteria": ["string"],
-      "maxTurnsForObjective": number,
-      "turnMatching": {
-        "scope": "any | recent | current",
-        "evaluationStrategy": "first_match | best_match | latest_match",
-        "recentTurnCount": number
-      }
-    }
-  ]
-}
-
-For each sub-objective, you must:
-
-1. Analyse the current "description" as the current defining objective.
-2. Suggest a clearer, more testable defining objective.
-3. Provide an alternative defining objective.
-4. Explain briefly why your suggestion is better.
-
-Return ONLY valid JSON with this structure (no explanation text outside JSON):
-
-{
-  "subObjectives": [
-    {
-      "index": 0,
-      "currentDefiningObjective": "string",
-      "recommendation": {
-        "reason": "string",
-        "suggestedDefiningObjective": "string",
-        "alternativeDefiningObjective": "string"
-      }
-    }
-  ]
-}
-""".strip()
-
 
 SYSTEM_PROMPT_SIMPLE = """
 You are a test objective rewriting assistant.
@@ -467,40 +284,6 @@ def _invoke_bedrock(body: dict) -> dict:
     return json.loads(raw_body)
 
 
-def call_bedrock_composite(composite: CompositeObjective) -> RecommendResponse:
-    """
-    Call Bedrock for the composite objective case and parse the JSON the model returns.
-    """
-    body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "system": SYSTEM_PROMPT_COMPOSITE,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": json.dumps(composite.model_dump(), indent=2),
-                    }
-                ],
-            }
-        ],
-        "max_tokens": 1024,
-        "temperature": 0.0,
-    }
-
-    resp_json = _invoke_bedrock(body)
-
-    text_chunks = resp_json.get("content", [])
-    if not text_chunks or "text" not in text_chunks[0]:
-        raise ValueError("Model returned no text content")
-
-    raw_text = text_chunks[0]["text"].strip()
-    parsed = json.loads(raw_text)
-
-    return RecommendResponse(**parsed)
-
-
 def call_bedrock_simple(payload: SimpleObjectiveRequest) -> SimpleRecommendResponse:
     """
     Call Bedrock for a single vague objective (simple mode) and parse JSON.
@@ -537,70 +320,34 @@ def call_bedrock_simple(payload: SimpleObjectiveRequest) -> SimpleRecommendRespo
 
 
 # ==============================
-# FastAPI app & endpoints
+# FastAPI app & single endpoint
 # ==============================
 
 app = FastAPI(
-    title="Objective Recommender API",
+    title="Objective Recommendation API",
     description=(
-        "FastAPI wrapper around Bedrock (via Cognito) to recommend "
-        "clearer defining objectives.\n\n"
-        "- `/recommend`: Composite mode (persona, userVariables, subObjectives[]).\n"
-        "- `/recommend-simple`: Simple mode with one objective + optional structured context object.\n\n"
-        "In `/recommend-simple`, only `objective` is required. `context` is optional, and all fields inside "
-        "`context` are also optional."
+        "Single-purpose API to refine a vague defining objective into a clearer, testable one.\n\n"
+        "Endpoint: `/recommendation`\n\n"
+        "- Required: `objective` (string)\n"
+        "- Optional: `context` object (and all fields inside it are optional).\n\n"
+        "Authentication: requires `X-API-Key` header."
     ),
-    version="1.2.1",
+    version="2.0.0",
 )
 
 
 @app.get("/", include_in_schema=False)
 async def root():
-    return {"status": "ok", "message": "Objective Recommender API"}
+    return {"status": "ok", "message": "Objective Recommendation API"}
 
 
 @app.post(
-    "/recommend",
-    response_model=RecommendResponse,
-    summary="Recommend clearer defining objectives (Composite mode)",
-    dependencies=[Depends(verify_api_key)],
-)
-async def recommend_objectives(payload: CompositeObjective):
-    """
-    Accepts a CompositeObjective and returns improved defining objectives for each sub-objective.
-
-    **Required fields:**
-    - `persona`
-    - `subObjectives` (array with at least one item)
-    - each `subObjectives[i].description`
-
-    **Optional fields:**
-    - `name`, `description`, `domain`, `userVariables`
-    - in each sub-objective: `isBlocking`, `instructions`, `satisfactionCriteria`,
-      `maxTurnsForObjective`, `turnMatching` (and all fields inside `turnMatching`).
-    """
-    try:
-        result = call_bedrock_composite(payload)
-        return result
-    except json.JSONDecodeError as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to parse model JSON: {e}",
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error calling Bedrock (composite): {e}",
-        )
-
-
-@app.post(
-    "/recommend-simple",
+    "/recommendation",
     response_model=SimpleRecommendResponse,
-    summary="Recommend clearer defining objective (Simple mode, structured context)",
+    summary="Recommend clearer defining objective",
     dependencies=[Depends(verify_api_key)],
 )
-async def recommend_objective_simple(payload: SimpleObjectiveRequest):
+async def recommendation(payload: SimpleObjectiveRequest):
     """
     Lightweight endpoint for a single defining objective.
 
@@ -628,7 +375,7 @@ async def recommend_objective_simple(payload: SimpleObjectiveRequest):
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error calling Bedrock (simple): {e}",
+            detail=f"Error calling Bedrock: {e}",
         )
 
 
