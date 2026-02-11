@@ -54,55 +54,73 @@ async def verify_api_key(x_api_key: str = Header(..., alias="X-API-Key")):
 class TurnMatching(BaseModel):
     scope: Optional[str] = Field(
         default="any",
-        description="Turn matching scope: any | recent | current",
+        description="(optional) Turn matching scope. One of: any | recent | current. Default: any.",
     )
     evaluationStrategy: Optional[str] = Field(
         default="first_match",
-        description="Evaluation strategy: first_match | best_match | latest_match",
+        description=(
+            "(optional) Evaluation strategy for matching turns. "
+            "One of: first_match | best_match | latest_match. Default: first_match."
+        ),
     )
     recentTurnCount: Optional[int] = Field(
-        default=None, description="Required when scope='recent'"
+        default=None,
+        description="(optional) Only required when scope='recent'. Number of recent turns to consider.",
     )
 
 
 class SubObjective(BaseModel):
-    description: str = Field(..., description="What should be achieved")
+    description: str = Field(
+        ...,
+        description="(required) What this sub-objective is trying to achieve.",
+    )
     isBlocking: Optional[bool] = Field(
         default=False,
-        description="If true, failure stops the test",
+        description="(optional) If true, failure of this objective stops the test. Default: false.",
     )
     instructions: Optional[str] = Field(
         default=None,
-        description="Special instructions for evaluation",
+        description="(optional) Special instructions for how this sub-objective should be evaluated.",
     )
     satisfactionCriteria: Optional[List[str]] = Field(
         default=None,
-        description="Concrete pass conditions for this sub-objective",
+        description="(optional) List of concrete pass conditions for this sub-objective.",
     )
     maxTurnsForObjective: Optional[int] = Field(
         default=12,
-        description="Maximum turns for this sub objective",
+        description="(optional) Maximum turns allowed for this sub-objective. Default: 12.",
     )
     turnMatching: Optional[TurnMatching] = Field(
         default=None,
-        description="Turn-based objective matching configuration",
+        description="(optional) Turn-based matching configuration for this sub-objective.",
     )
 
 
 class CompositeObjective(BaseModel):
-    name: Optional[str] = Field(default=None)
-    description: Optional[str] = Field(default=None)
+    name: Optional[str] = Field(
+        default=None,
+        description="(optional) Human-friendly name for this composite objective.",
+    )
+    description: Optional[str] = Field(
+        default=None,
+        description="(optional) Free-text description of the scenario.",
+    )
     domain: Optional[str] = Field(
         default=None,
-        description="Optional domain label, e.g. telecom_billing, banking",
+        description="(optional) Domain label, e.g. 'telecom_billing', 'banking', 'travel'.",
     )
-    persona: str = Field(..., description="Persona or customer type")
+    persona: str = Field(
+        ...,
+        description="(required) Persona or customer type, e.g. 'Postpaid telecom customer in Ireland'.",
+    )
     userVariables: Optional[Dict[str, str]] = Field(
         default=None,
-        description="Context variables for the persona",
+        description="(optional) Context variables for the persona, as key/value strings.",
     )
     subObjectives: List[SubObjective] = Field(
-        ..., min_items=1, description="At least one sub objective required"
+        ...,
+        min_items=1,
+        description="(required) Array of at least one sub-objective.",
     )
 
     class Config:
@@ -151,36 +169,36 @@ class CompositeObjective(BaseModel):
 class SimpleContext(BaseModel):
     persona: Optional[str] = Field(
         default=None,
-        description="Persona or customer type, e.g. 'Postpaid telecom customer in Ireland'.",
+        description="(optional) Persona or customer type, e.g. 'Postpaid telecom customer in Ireland'.",
     )
     domain: Optional[str] = Field(
         default=None,
-        description="Domain label, e.g. 'telecom_billing', 'banking', 'travel'.",
+        description="(optional) Domain label, e.g. 'telecom_billing', 'banking', 'travel'.",
     )
     instructions: Optional[str] = Field(
         default=None,
-        description="High-level instructions for how the agent/test should behave.",
+        description="(optional) High-level instructions for how the agent/test should behave.",
     )
     satisfactionCriteria: Optional[List[str]] = Field(
         default=None,
-        description="Concrete pass/fail criteria for this defining objective.",
+        description="(optional) List of concrete pass/fail criteria for this defining objective.",
     )
     extraNotes: Optional[str] = Field(
         default=None,
-        description="Any additional scenario details not covered above.",
+        description="(optional) Any additional scenario details not covered above.",
     )
 
 
 class SimpleObjectiveRequest(BaseModel):
     objective: str = Field(
         ...,
-        description="The defining objective or prompt you want to rewrite/refine.",
+        description="(required) The defining objective or prompt you want to rewrite/refine.",
     )
     context: Optional[SimpleContext] = Field(
         default=None,
         description=(
-            "Optional structured context (persona, domain, instructions, "
-            "satisfaction criteria, extra notes)."
+            "(optional) Structured context object. You may omit it entirely. "
+            "If provided, ALL fields inside context are also optional."
         ),
     )
 
@@ -526,10 +544,13 @@ app = FastAPI(
     title="Objective Recommender API",
     description=(
         "FastAPI wrapper around Bedrock (via Cognito) to recommend "
-        "clearer defining objectives. Includes a rich CompositeObjective "
-        "mode and a simple single-objective mode with structured context."
+        "clearer defining objectives.\n\n"
+        "- `/recommend`: Composite mode (persona, userVariables, subObjectives[]).\n"
+        "- `/recommend-simple`: Simple mode with one objective + optional structured context object.\n\n"
+        "In `/recommend-simple`, only `objective` is required. `context` is optional, and all fields inside "
+        "`context` are also optional."
     ),
-    version="1.2.0",
+    version="1.2.1",
 )
 
 
@@ -546,10 +567,17 @@ async def root():
 )
 async def recommend_objectives(payload: CompositeObjective):
     """
-    Accepts a CompositeObjective (with persona, userVariables, subObjectives[])
-    and returns improved defining objectives for each sub-objective.
+    Accepts a CompositeObjective and returns improved defining objectives for each sub-objective.
 
-    Security: requires `X-API-Key` header with the configured API key.
+    **Required fields:**
+    - `persona`
+    - `subObjectives` (array with at least one item)
+    - each `subObjectives[i].description`
+
+    **Optional fields:**
+    - `name`, `description`, `domain`, `userVariables`
+    - in each sub-objective: `isBlocking`, `instructions`, `satisfactionCriteria`,
+      `maxTurnsForObjective`, `turnMatching` (and all fields inside `turnMatching`).
     """
     try:
         result = call_bedrock_composite(payload)
@@ -574,15 +602,20 @@ async def recommend_objectives(payload: CompositeObjective):
 )
 async def recommend_objective_simple(payload: SimpleObjectiveRequest):
     """
-    Accepts a single vague defining objective plus optional structured context and returns:
+    Lightweight endpoint for a single defining objective.
 
-    - reason
-    - suggestedDefiningObjective
-    - alternativeDefiningObjective
+    **Required field:**
+    - `objective` (string)
 
-    This is the lightweight version where only the objective text is required.
-    Context, if present, is a structured object containing persona, domain, instructions,
-    satisfaction criteria, and extra notes.
+    **Optional field:**
+    - `context` (object). You may omit it entirely.
+
+    **All fields inside `context` are optional:**
+    - `persona`
+    - `domain`
+    - `instructions`
+    - `satisfactionCriteria`
+    - `extraNotes`
     """
     try:
         result = call_bedrock_simple(payload)
